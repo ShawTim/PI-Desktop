@@ -3233,6 +3233,11 @@ identify the platform validation still needed.
   is replaced by the deterministic test title after the completed turn; after a
   manual rename, a later plugin completion cannot replace it. A session without
   the plugin keeps its prompt fallback, and a second prompt never changes it.
+- **Upgrade regression**: In an isolated v22 fixture, manually rename a session
+  to lowercase `new task` before opening it in the current build. After upgrade,
+  the title remains `new task` with source `legacy`; first-prompt derivation and
+  plugin title writes cannot replace it. New sessions still derive titles.
+  Host regression: `v22_database_migrates_session_title_sources_without_losing_titles`.
 - **Specs linked**: `03-runtime/01-ipc-protocol.md`,
   `03-runtime/04-data-storage.md`, `03-runtime/06-host-rpc-protocol.md`,
   `03-runtime/02-agent-runtime.md`, `07-plugins/03-plugin-api.md`,

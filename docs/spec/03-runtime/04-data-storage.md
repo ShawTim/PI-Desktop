@@ -647,16 +647,22 @@ CREATE INDEX idx_session_import_origins_plugin
   rename does not update `updated_at`, so changing a label cannot reorder
   recent activity; transcript rows, message count, and session state remain
   unchanged.
-- `title_source` records `legacy`, `default`, `manual`, or `generated`. Schema
-  v23 classifies pre-existing known placeholder titles as `default` and all
-  other titles as `manual`; new session creation and manual rename write the
-  corresponding source. `default` means "not chosen by the user and still
-  replaceable": it covers a new session's placeholder and the deterministic
+- `title_source` records `legacy`, `default`, `manual`, or `generated`. The
+  v22→v23 migration leaves pre-existing titles as `legacy`; new session creation
+  and manual rename write the corresponding source. `default` means "not chosen
+  by the user and still replaceable": it covers a new session's placeholder and
+  the deterministic
   first-prompt fallback, which host-core writes only while the stored title is
   still a recognized placeholder. A placeholder is recognized in every shipped
   locale, because the renderer writes its localized `chat.untitledTask` label
-  when it creates a session. The standalone title plugin can read
-  exact-title compare-and-set, so a manual rename wins a race.
+  when it creates a session; recognition trims and lowercases the stored title
+  against the placeholder set. Schema v23 retains pre-existing v22 titles as
+  `legacy` to protect them from automatic replacement, because historical
+  sessions lack provenance to distinguish an untouched placeholder from a
+  deliberate rename to the same text. Existing v23/v24 rows are not reclassified.
+  The standalone title plugin can read first-turn text only while `default`,
+  and writes using exact-title
+  compare-and-set, so a manual rename wins a race.
 - Import binds every non-empty normalized `projectPath` to `project_id`;
   path-less imports remain `NULL`. Re-importing a deterministic session id
   creates neither another session nor another project row.
@@ -1637,9 +1643,9 @@ truncating at a guessed position.
 - **Schema v22 is additive.** It replaces `idx_sessions_updated` with
   `idx_sessions_updated_id(updated_at DESC, id DESC)` for session-list ordering.
   It changes no rows or persisted fields; a v21 backup precedes the migration.
-- **Schema v23 is additive.** It adds `sessions.title_source` and classifies
-  existing placeholder titles as `default`; every other existing title is
-  preserved and classified as `manual`. The migration keeps a v22 backup.
+- **Schema v23 is additive.** It adds `sessions.title_source` with default
+  `legacy`. Pre-existing v22 titles remain `legacy`, safely protecting deliberate
+  renames from automatic replacement. The migration keeps a v22 backup.
 - **Schema v14 is additive.** It adds nullable `sessions.deleted_at`, the
   partial deletion index, and `session_import_origins`. Existing sessions stay
   active and have no origin rows. The migration runs in the same guarded
