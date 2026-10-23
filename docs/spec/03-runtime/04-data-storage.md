@@ -652,7 +652,10 @@ CREATE INDEX idx_session_import_origins_plugin
   first-prompt fallback, which host-core writes only while the stored title is
   still a recognized placeholder. A placeholder is recognized in every shipped
   locale, because the renderer writes its localized `chat.untitledTask` label
-  when it creates a session. The standalone title plugin can read
+  when it creates a session; recognition trims and lowercases the stored title
+  against one host list, so the migration, session creation, and the plugin
+  title path agree. Schema v25 re-classifies the rows a case-sensitive v23
+  classification had recorded as `manual`. The standalone title plugin can read
   exact-title compare-and-set, so a manual rename wins a race.
 - Import binds every non-empty normalized `projectPath` to `project_id`;
   path-less imports remain `NULL`. Re-importing a deterministic session id
@@ -1628,6 +1631,12 @@ truncating at a guessed position.
 - **Schema v23 is additive.** It adds `sessions.title_source` and classifies
   existing placeholder titles as `default`; every other existing title is
   preserved and classified as `manual`. The migration keeps a v22 backup.
+- **Schema v25 is a data repair.** The v23 migration compared stored titles
+  against a case-sensitive placeholder list while the renderer persists the
+  lowercased localized label, so Latin-script placeholders were recorded as
+  `manual` and those sessions lost their eligibility for an automatic title.
+  v25 re-runs the shared placeholder matching over `manual` rows, leaves every
+  other source and every stored title untouched, and keeps a v24 backup.
 - **Schema v14 is additive.** It adds nullable `sessions.deleted_at`, the
   partial deletion index, and `session_import_origins`. Existing sessions stay
   active and have no origin rows. The migration runs in the same guarded

@@ -19,8 +19,8 @@ pub const MODES: [&str; 3] = ["plan", "goal", "agent"];
 
 /// Maximum number of Unicode scalar values accepted for a user-defined title.
 pub const MAX_SESSION_TITLE_CHARS: usize = 80;
-const TITLE_SOURCE_DEFAULT: &str = "default";
-const TITLE_SOURCE_MANUAL: &str = "manual";
+pub(crate) const TITLE_SOURCE_DEFAULT: &str = "default";
+pub(crate) const TITLE_SOURCE_MANUAL: &str = "manual";
 const TITLE_SOURCE_GENERATED: &str = "generated";
 
 #[derive(Debug, Clone, Serialize)]
@@ -347,9 +347,10 @@ pub struct SearchHit {
 /// keys the renderer writes — `chat.untitledTask` and `nav.newChat` — have
 /// their own label per locale, and a non-ASCII uppercase letter (a future
 /// "Ñö..." entry) would slip past ASCII-case-insensitive matching (#1755).
-/// Keep this in sync with the migration list in
-/// `db/session_title_source_migration.rs` and `LEGACY_DEFAULT_TITLES` in the
-/// renderer.
+/// Keep this list in sync with `LEGACY_DEFAULT_TITLES` in
+/// `apps/desktop/src/lib/session-title-utils.ts`. The schema migrations in
+/// `db/session_title_source_migration.rs` classify through `is_default_title`,
+/// so this list is their single source of truth.
 const PLACEHOLDER_TITLES: [&str; 19] = [
     "",
     "new task",
@@ -372,7 +373,7 @@ const PLACEHOLDER_TITLES: [&str; 19] = [
     "nouvelle discussion",
 ];
 
-fn is_default_title(title: &str) -> bool {
+pub(crate) fn is_default_title(title: &str) -> bool {
     let t = title.trim().to_lowercase();
     PLACEHOLDER_TITLES.iter().any(|p| *p == t)
 }

@@ -126,13 +126,18 @@ fn v18_database_migrates_session_thinking_omit() {
 fn v22_database_migrates_session_title_sources_without_losing_titles() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("pi.sqlite");
-    let (default_id, localized_id, manual_id) = {
+    let (default_id, lowercase_id, capitalized_id, manual_id) = {
         let db = Database::open(&path).unwrap();
         let default_session =
             crate::sessions::create_session(&db, None, None, None, None, None).unwrap();
-        // A v22 install wrote the active locale's placeholder into the title.
-        let localized_session =
-            crate::sessions::create_session(&db, Some("새 작업".into()), None, None, None, None)
+        // A v22 install wrote the active locale's placeholder into the title,
+        // and the renderer lowercases `chat.untitledTask` before persisting it.
+        let lowercase_session =
+            crate::sessions::create_session(&db, Some("new task".into()), None, None, None, None)
+                .unwrap();
+        // CJK catalogs and pre-lowercase releases kept the catalog casing.
+        let capitalized_session =
+            crate::sessions::create_session(&db, Some("New task".into()), None, None, None, None)
                 .unwrap();
         let manual_session = crate::sessions::create_session(
             &db,
@@ -147,12 +152,96 @@ fn v22_database_migrates_session_title_sources_without_losing_titles() {
             .execute_batch("ALTER TABLE sessions DROP COLUMN title_source;")
             .unwrap();
         db.conn().pragma_update(None, "user_version", 22).unwrap();
-        (default_session.id, localized_session.id, manual_session.id)
+        (
+            default_session.id,
+            lowercase_session.id,
+            capitalized_session.id,
+            manual_session.id,
+        )
     };
 
     let db = Database::open(&path).unwrap();
     assert_eq!(schema_version(db.conn()), SCHEMA_VERSION);
     assert!(migration_backup_path(&path, 22).exists());
+    let sources: (String, String, String, String) = db
+        .conn()
+        .query_row(
+            "SELECT
+                (SELECT title_source FROM sessions WHERE id = ?1),
+                (SELECT title_source FROM sessions WHERE id = ?2),
+                (SELECT title_source FROM sessions WHERE id = ?3),
+                (SELECT title_source FROM sessions WHERE id = ?4)",
+            params![default_id, lowercase_id, capitalized_id, manual_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        sources,
+        (
+            "default".into(),
+            "default".into(),
+            "default".into(),
+            "manual".into()
+        )
+    );
+    let titles: (String, String) = db
+        .conn()
+        .query_row(
+            "SELECT
+                (SELECT title FROM sessions WHERE id = ?1),
+                (SELECT title FROM sessions WHERE id = ?2)",
+            params![lowercase_id, manual_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(titles.0, "new task");
+    assert_eq!(titles.1, "A title chosen by the user");
+}
+
+/// v23 classified placeholders with a case-sensitive SQL list, so every
+/// database it stamped recorded lowercased Latin-script placeholders as
+/// `manual` and those sessions never received an automatic title again. v25
+/// re-classifies exactly those rows and leaves every other title alone.
+#[test]
+fn v24_database_repairs_placeholder_titles_misclassified_as_manual() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("pi.sqlite");
+    let (lowercase_id, capitalized_id, manual_id) = {
+        let db = Database::open(&path).unwrap();
+        let lowercase_session =
+            crate::sessions::create_session(&db, Some("new task".into()), None, None, None, None)
+                .unwrap();
+        let capitalized_session =
+            crate::sessions::create_session(&db, Some("New task".into()), None, None, None, None)
+                .unwrap();
+        let manual_session = crate::sessions::create_session(
+            &db,
+            Some("A title chosen by the user".into()),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        // Simulate the v23 result: the lowercased placeholder did not match its
+        // capitalized entry, so the row was recorded as manually named.
+        db.conn()
+            .execute(
+                "UPDATE sessions SET title_source = 'manual' WHERE id IN (?1, ?2)",
+                params![lowercase_session.id, capitalized_session.id],
+            )
+            .unwrap();
+        db.conn().pragma_update(None, "user_version", 24).unwrap();
+        (
+            lowercase_session.id,
+            capitalized_session.id,
+            manual_session.id,
+        )
+    };
+
+    let db = Database::open(&path).unwrap();
+    assert_eq!(schema_version(db.conn()), SCHEMA_VERSION);
+    assert!(migration_backup_path(&path, 24).exists());
     let sources: (String, String, String) = db
         .conn()
         .query_row(
@@ -160,7 +249,7 @@ fn v22_database_migrates_session_title_sources_without_losing_titles() {
                 (SELECT title_source FROM sessions WHERE id = ?1),
                 (SELECT title_source FROM sessions WHERE id = ?2),
                 (SELECT title_source FROM sessions WHERE id = ?3)",
-            params![default_id, localized_id, manual_id],
+            params![lowercase_id, capitalized_id, manual_id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .unwrap();
@@ -168,6 +257,20 @@ fn v22_database_migrates_session_title_sources_without_losing_titles() {
         sources,
         ("default".into(), "default".into(), "manual".into())
     );
+    // The repair restores the user path: the first prompt may title a session
+    // that still carried the localized placeholder, while a real title wins.
+    let derived = crate::sessions::derive_session_title(&db, &lowercase_id, "Fix the login");
+    assert!(derived.unwrap());
+    assert_eq!(
+        crate::sessions::get_session(&db, &lowercase_id)
+            .unwrap()
+            .unwrap()
+            .summary
+            .title,
+        "Fix the login"
+    );
+    let manual_derived = crate::sessions::derive_session_title(&db, &manual_id, "Fix the login");
+    assert!(!manual_derived.unwrap());
     assert_eq!(
         crate::sessions::get_session(&db, &manual_id)
             .unwrap()

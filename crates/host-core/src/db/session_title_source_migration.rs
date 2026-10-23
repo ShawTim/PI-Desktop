@@ -1,4 +1,5 @@
-use super::{create_migration_backup, Connection, Context, Path, Result};
+use super::{create_migration_backup, params, Connection, Context, Path, Result};
+use crate::sessions::{is_default_title, TITLE_SOURCE_DEFAULT, TITLE_SOURCE_MANUAL};
 use rusqlite::Transaction;
 
 fn migrate_v22_to_v23_tx(tx: &Transaction<'_>) -> Result<()> {
@@ -15,23 +16,50 @@ fn migrate_v22_to_v23_tx(tx: &Transaction<'_>) -> Result<()> {
         // Older releases stored default and manually-entered titles in the
         // same column. Preserve the distinction where it is observable: only
         // known placeholders remain eligible for automatic replacement; every
-        // other pre-existing title is treated as manual. The list mirrors
-        // `sessions::PLACEHOLDER_TITLES` and covers the localized
-        // `chat.untitledTask` / `nav.newChat` labels the renderer writes.
-        tx.execute(
-            "UPDATE sessions SET title_source = CASE
-                 WHEN title IN ('', 'New task', 'New chat', '新建任务', '新对话',
-                                '新建任務', '新對話', '새 작업', '새 채팅',
-                                'Tarefa sem título', 'Nova conversa',
-                                'Yeni görev', 'Yeni sohbet', 'Neue Aufgabe',
-                                'Nouvelle tâche', 'Nueva tarea', 'Neuer Chat',
-                                'Nuevo chat', 'Nouvelle discussion') THEN 'default'
-                 ELSE 'manual'
-             END",
-            [],
-        )?;
+        // other pre-existing title is treated as manual. Classification goes
+        // through `sessions::is_default_title` rather than a SQL literal list,
+        // because the renderer persists the lowercased `chat.untitledTask` /
+        // `nav.newChat` label of the active locale: a case-sensitive
+        // `title IN (...)` comparison recorded every Latin-script locale as
+        // manual.
+        classify_session_titles(tx, "SELECT id, title FROM sessions")?;
     }
     tx.pragma_update(None, "user_version", 23i64)?;
+    Ok(())
+}
+
+/// Schema v23 classified pre-existing titles with a case-sensitive placeholder
+/// list, so sessions whose stored title was the lowercased localized
+/// placeholder — every non-CJK locale — were recorded as `manual` and silently
+/// lost their eligibility for an automatic title. Re-classify exactly those
+/// rows with the shared matcher; stored titles are never touched.
+fn migrate_v24_to_v25_tx(tx: &Transaction<'_>) -> Result<()> {
+    classify_session_titles(
+        tx,
+        "SELECT id, title FROM sessions WHERE title_source = 'manual'",
+    )?;
+    tx.pragma_update(None, "user_version", 25i64)?;
+    Ok(())
+}
+
+/// Rewrite `title_source` for the rows the query returns through the same
+/// matcher session creation and `derive_session_title` use, so no migration can
+/// drift from `sessions::PLACEHOLDER_TITLES`.
+fn classify_session_titles(tx: &Transaction<'_>, query: &str) -> Result<()> {
+    let rows: Vec<(String, String)> = {
+        let mut stmt = tx.prepare(query)?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>()?
+    };
+    let mut update = tx.prepare("UPDATE sessions SET title_source = ?1 WHERE id = ?2")?;
+    for (id, title) in rows {
+        let source = if is_default_title(&title) {
+            TITLE_SOURCE_DEFAULT
+        } else {
+            TITLE_SOURCE_MANUAL
+        };
+        update.execute(params![source, id])?;
+    }
     Ok(())
 }
 
@@ -42,6 +70,19 @@ pub(crate) fn migrate_v22_to_v23(conn: &Connection, path: &Path) -> Result<()> {
     tx.commit().with_context(|| {
         format!(
             "commit schema v22 to v23 migration; backup {} remains",
+            backup.display()
+        )
+    })?;
+    Ok(())
+}
+
+pub(crate) fn migrate_v24_to_v25(conn: &Connection, path: &Path) -> Result<()> {
+    let backup = create_migration_backup(conn, path, 24)?;
+    let tx = conn.unchecked_transaction()?;
+    migrate_v24_to_v25_tx(&tx)?;
+    tx.commit().with_context(|| {
+        format!(
+            "commit schema v24 to v25 migration; backup {} remains",
             backup.display()
         )
     })?;
